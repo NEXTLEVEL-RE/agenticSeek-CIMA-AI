@@ -1,112 +1,80 @@
-version: '3'
+version: '3.8'
 
 services:
-  redis:
-    container_name: redis
-    profiles: ["core", "full"]
-    image: docker.io/valkey/valkey:8-alpine
-    command: valkey-server --save 30 1 --loglevel warning
-    restart: unless-stopped
-    volumes:
-      - redis-data:/data
-    cap_drop:
-      - ALL
-    cap_add:
-      - SETGID
-      - SETUID
-      - DAC_OVERRIDE
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "1m"
-        max-file: "1"
-    networks:
-      - agentic-seek-net
-
-  searxng:
-    container_name: searxng
-    profiles: ["core", "full"]
-    image: docker.io/searxng/searxng:latest
-    restart: unless-stopped
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./searxng:/etc/searxng:rw,z
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15
+    container_name: real_estate_db
     environment:
-      - SEARXNG_BASE_URL=${SEARXNG_BASE_URL:-http://localhost:8080/}
-      - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY}
-      - UWSGI_WORKERS=4
-      - UWSGI_THREADS=4
-    cap_add:
-      - CHOWN
-      - SETGID
-      - SETUID
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "1m"
-        max-file: "1"
-    depends_on:
-      - redis
-    networks:
-      - agentic-seek-net
-
-  frontend:
-    container_name: frontend
-    profiles: ["core", "full"]
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile.frontend
-    ports:
-      - "3000:3000"
+      POSTGRES_DB: real_estate_db
+      POSTGRES_USER: real_estate_user
+      POSTGRES_PASSWORD: real_estate_password
     volumes:
-      - ./frontend/agentic-seek-front/src:/app/src:rw,z
-      - ./screenshots:/app/screenshots
-    environment:
-      - NODE_ENV=development
-      - CHOKIDAR_USEPOLLING=true
-      - REACT_APP_BACKEND_URL=http://localhost:7777
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
     networks:
-      - agentic-seek-net
+      - real_estate_network
 
+  # Backend API
   backend:
-    container_name: backend
-    profiles: ["backend", "full"]
     build:
-      context: .
-      dockerfile: Dockerfile.backend
-    ports:
-      - ${BACKEND_PORT:-7777}:${BACKEND_PORT:-7777}
-      - ${OLLAMA_PORT:-11434}:${OLLAMA_PORT:-11434}
-      - ${LM_STUDIO_PORT:-1234}:${LM_STUDIO_PORT:-1234}
-      - ${CUSTOM_ADDITIONAL_LLM_PORT:-8000}:${CUSTOM_ADDITIONAL_LLM_PORT:-8000}
-    volumes:
-      - ./:/app
-      - ${WORK_DIR:-.}:/opt/workspace
-    command: python3 api.py
+      context: ./real_estate_backend
+      dockerfile: Dockerfile
+    container_name: real_estate_backend
     environment:
-      - SEARXNG_BASE_URL=${SEARXNG_BASE_URL:-http://searxng:8080}
-      - REDIS_URL=${REDIS_BASE_URL:-redis://redis:6379/0}
-      - WORK_DIR=/opt/workspace
-      - BACKEND_PORT=${BACKEND_PORT}
-      - DOCKER_INTERNAL_URL=http://host.docker.internal
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      - TOGETHER_API_KEY=${TOGETHER_API_KEY}
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - HUGGINGFACE_API_KEY=${HUGGINGFACE_API_KEY}
-      - DSK_DEEPSEEK_API_KEY=${DSK_DEEPSEEK_API_KEY}
+      - DATABASE_URL=postgresql://real_estate_user:real_estate_password@postgres:5432/real_estate_db
+      - SECRET_KEY=your-production-secret-key-change-this
+      - DEBUG=False
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+    restart: unless-stopped
     networks:
-      - agentic-seek-net
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - real_estate_network
+    volumes:
+      - ./real_estate_backend:/app
+      - /app/__pycache__
+
+  # Frontend
+  frontend:
+    build:
+      context: ./real_estate_frontend
+      dockerfile: Dockerfile
+    container_name: real_estate_frontend
+    environment:
+      - VITE_API_URL=http://localhost:8000/api/v1
   
+      - "3000:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - real_estate_network
+
+  # Nginx Reverse Proxy (Optional)
+  nginx:
+    image: nginx:alpine
+    container_name: real_estate_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - ./ssl:/etc/nginx/ssl
+    depends_on:
+      - frontend
+      - backend
+    restart: unless-stopped
+    networks:
+      - real_estate_network
+
 volumes:
-  redis-data:
-  chrome_profiles:
+  postgres_data:
 
 networks:
-  agentic-seek-net:
+  real_estate_network:
     driver: bridge
